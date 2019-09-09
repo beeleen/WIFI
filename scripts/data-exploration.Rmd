@@ -1,0 +1,221 @@
+---
+title: "wifi-exploring-data"
+output:
+ html_document:
+   toc: true
+   toc_depth: 5
+   toc_float:
+     collapsed: false
+     smooth_scroll: true
+     theme: cerulean
+---
+<h1> Initialize and Load Data </h1>
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+pacman::p_load(ggplot2, dplyr, party, caret, corrplot, reshape, rpart, rattle, psych, tidyr, stringr, randomForest, tictoc, corrplot)
+
+wifidataTrain <- read.csv("~/Documents/@/UBIQUM/DATAML/ModuleIOT/WIFI/datasets/trainingData.csv")
+wifidataTest <- read.csv("~/Documents/@/UBIQUM/DATAML/ModuleIOT/WIFI/datasets/validationData.csv")
+ 
+#Remove Scientific notations
+options(scipen=999)
+
+#Seed function
+ reset.seed <- function()
+{
+  set.seed(1337)
+ }
+ 
+
+```
+ <h1> Preprocessing </h1>
+```{r}
+ 
+#Buildings, SpaceID and Floor as factors
+wifidataTrain$BUILDINGID <- as.factor(wifidataTrain$BUILDINGID) 
+wifidataTrain$SPACEID <- as.factor(wifidataTrain$SPACEID) 
+wifidataTrain$FLOOR <- as.factor(wifidataTrain$FLOOR) 
+  
+Zerobar <- nearZeroVar(wifidataTrain,saveMetrics = TRUE)
+wifidataTrain <- wifidataTrain[,!Zerobar$zeroVar]
+
+#remove duplicates
+wifidataTrain <- distinct(wifidataTrain)
+
+#take a sample
+#wifiTrainSample <- wifidataTrain[sample(1:nrow(wifidataTrain), 1872,
+ #  replace=FALSE),] 
+
+reset.seed()
+```
+
+<h1> Sample and Splitting data </h1>
+```{r}
+#Splitting the data with ALL VARIABLES
+intrain <- createDataPartition(y = wifiTrainSample$FLOOR, p= 0.7, list = FALSE)
+train <- wifiTrainSample[intrain, ]
+test <-  wifiTrainSample[-intrain, ]
+
+#trainControl
+ctrl <- trainControl(method ="repeatedcv", repeats = 3, classProbs = TRUE, summaryFunction = multiClassSummary) 
+
+
+#take a sample WITH all variables
+wifiTrainSample <- wifidataTrain[sample(1:nrow(wifidataTrain), 1872,
+   replace=FALSE),] 
+```
+
+<h1> Random Forest </h1>
+```{r}
+#random forest @Caret
+plsFit <- train(FLOOR~., data = train, method = "rf",tuneLength = 2, preProc = c("center", "scale")) 
+plsFit
+
+predrf <- predict(plsFit, newdata = test)
+pred_metric_rf <- postResample(test$FLOOR, predrf)
+pred_metric_rf
+
+```
+
+
+```{r}
+####################################################################
+
+#Select variables only with WAPS
+
+wifiOnlyWaps <- wifidataTrain %>% select(1:465)
+
+
+#Sample
+wifiTrainSampleWaps <- wifiOnlyWaps[sample(1:nrow(wifiOnlyWaps), 500, replace=FALSE),] 
+
+```
+
+<h1> Remove Correlated</h1>
+```{r}
+
+#correlation matrix
+corrData <- cor(wifiOnlyWaps)
+corrplot(corrData)
+
+highCorr <- sum(abs(corrData[upper.tri(corrData)]) > .999)
+summary(corrData[upper.tri(corrData)])
+
+
+highlyCorDescr <- findCorrelation(corrData, cutoff = .75)
+summary(highlyCorDescr[upper.tri(highlyCorDescr)]) #112 elements
+
+filteredDescr <- filteredDescr[,-highlyCorDescr]
+descrCor2 <- cor(filteredDescr)
+summary(descrCor2[upper.tri(descrCor2)])
+
+
+#Stratification for sampling
+#By spaceId?
+#Filtering by buildings? 
+# data_building_1_floor <- wifidataTrain %>% filter()
+
+
+```
+
+<h1> Predicting Floor </h1>
+```{r}
+
+wifiTrainSampleWaps$FLOOR <-  wifiTrainSampleWaps$FLOOR
+
+#Splitting
+intrainWaps <- createDataPartition(y = wifiTrainSampleWaps$FLOOR, p= 0.7, list = FALSE)
+trainWaps <- wifiTrainSampleWaps[intrainWaps, ]
+testWaps <-  wifiTrainSampleWaps[-intrainWaps, ]
+
+```
+
+```{r}
+#random forest ~FLOOR @Caret
+plsFitWapsFloor <- train(FLOOR~., data = trainWaps, method = "rf") 
+plsFitWapsFloor
+
+ # mtry  Accuracy   Kappa    
+ #    2   0.3338703  0.1131764
+ #   32   0.7587017  0.6840673
+ #  520   0.6982598  0.6055596
+
+predrf_Floor <- predict(plsFitWapsFloor, newdata = testWaps)
+pred_metric_rf_Floor <- postResample(testWaps$FLOOR, predrf_Floor)
+pred_metric_rf_Floor
+
+testWapsRF <- testWaps
+testWapsRF$Predicted <- predrf_Floor
+
+#  Accuracy     Kappa 
+# 0.8175676 0.7610619 
+
+confusionMatrix(data= testWapsRF$Predicted, reference = testWapsRF$FLOOR)
+
+#KNN ~FLOOR @Caret
+plsFitWapsFloorKNN <- train(FLOOR~., data = trainWaps, method = "knn",preProc = c("center", "scale")) 
+plsFitWapsFloorKNN
+
+ # k  Accuracy   Kappa    
+ #  5  0.6361530  0.5251972
+ #  7  0.6235055  0.5098479
+ #  9  0.6082343  0.4894728
+
+
+predrf_FloorKNN <- predict(plsFitWapsFloorKNN, newdata = testWaps)
+pred_metric_rf_FloorKNN <- postResample(testWaps$FLOOR, predrf_FloorKNN)
+pred_metric_rf_FloorKNN
+
+#  Accuracy     Kappa 
+# 0.6486486 0.5396028 
+
+
+#LM ~FLOOR @Caret
+plsFitWapsFloorLM <- train(FLOOR~., data = trainWaps, method = "lm",preProc = c("center", "scale")) 
+plsFitWapsFloorLM
+
+
+reset.seed()
+
+```
+
+<h1> Predicting Floor </h1>
+```{r}
+
+#random forest @Random Fores
+RF <- randomForest(FLOOR ~ ., data = TrainSet, importance = TRUE)
+
+
+
+rtree_model <- rpart(FLOOR~., data=train)
+fancyRpartPlot(rtree_model) 
+rtree_model
+
+
+```
+
+```{r}
+
+wifiOnlyWaps <- wifidataTrain[,1:521]
+wifidataTrain[1,521:523]
+wifidataTrain[1000:1200,524:529]
+
+wifidataTest[1,1:521]
+wifidataTest[1,510:529]
+wifidataTest[1000:1200,521:529]
+
+
+
+
+describe(wifidata[1:100])
+
+
+```
+
+
+```{r}
+describe(wifidata[525:529])
+
+```
+

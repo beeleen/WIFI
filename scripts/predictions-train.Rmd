@@ -1,0 +1,369 @@
+---
+title: "wifi-predictions-second-phase"
+output: html_notebook
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r echo=TRUE}
+pacman::p_load(ggplot2, dplyr, party, caret, corrplot, reshape, rpart, rattle, psych, tidyr, stringr, randomForest, tictoc, plotly, readr,h2o, rstudioapi, randomForest)
+
+wifidataTrain <- read.csv("~/Documents/@/UBIQUM/DATAML/ModuleIOT/WIFI/datasets/trainingData.csv")
+wifidataVal <- read.csv("~/Documents/@/UBIQUM/DATAML/ModuleIOT/WIFI/datasets/validationData.csv")
+
+#Load data within H2O
+#wifidataTrain_h2o <- as.h2o(x = wifidataTrainNoCor, destination_frame = "wifidataTrain_h2o")
+ 
+#Delete last Columns
+wifidataTrain$SPACEID <- NULL
+wifidataTrain$RELATIVEPOSITION <- NULL
+wifidataTrain$USERID<- NULL
+wifidataTrain$PHONEID<- NULL
+wifidataTrain$TIMESTAMP<- NULL
+
+
+#Remove Scientific notations
+options(scipen=999)
+
+
+#Seed function
+ reset.seed <- function()
+{
+  set.seed(1337)
+ }
+ 
+
+#Buildings, SpaceID and Floor as factors
+wifidataTrain$BUILDINGID <- as.factor(wifidataTrain$BUILDINGID) 
+wifidataTrain$SPACEID <- as.factor(wifidataTrain$SPACEID) 
+wifidataTrain$FLOOR <- as.factor(wifidataTrain$FLOOR) 
+
+wifidataVal$BUILDINGID <- as.factor(wifidataVal$BUILDINGID) 
+wifidataVal$SPACEID <- as.factor(wifidataVal$SPACEID) 
+wifidataVal$FLOOR <- as.factor(wifidataVal$FLOOR) 
+  
+Zerobar <- nearZeroVar(wifidataTrain,saveMetrics = TRUE)
+wifidataTrain <- wifidataTrain[,!Zerobar$zeroVar]
+
+#remove duplicates
+wifidataTrain <- distinct(wifidataTrain)
+
+
+#Remove correlated predictors
+
+#Find correlations only in WAPs
+wifiTrainCor <- wifidataTrain %>% select(-c(LONGITUDE, LATITUDE, FLOOR, BUILDINGID))
+wifiTrainCor <- cor(wifiTrainCor)
+
+summary(wifiTrainCor[upper.tri(wifiTrainCor)])
+#Min.    1st Qu.     Median       Mean    3rd Qu. 
+#-0.2030918 -0.0232801 -0.0051047  0.0057678 -0.0008556 
+ #     Max. 
+ #0.9999832 
+
+#Find correlations: above .75 = 112 / above .8 = 86 / above .85 = 48 / above .9 = 20 / above .95 = 5
+highlywifiTrainCor <- findCorrelation(wifiTrainCor, cutoff = .8)
+wifidataTrainNoCor <- wifidataTrain[,-highlywifiTrainCor]
+
+
+```
+
+
+
+
+```{r}
+######################################################################################BUILDINGID###################################################################################################
+
+
+#Select variables only with WAPS + BUILDINGID
+
+wifiWapsBuilding <- wifidataTrainNoCor %>% select(-c(LONGITUDE, LATITUDE, FLOOR))
+
+
+```
+
+```{r}
+############################################BUILDINGID######################################################################################################################
+
+reset.seed()
+
+      #random forest ~BUILDINGID @Random Forest
+      #plsFitWapsBuilding <- randomForest(BUILDINGID~., data = wifiWapsBuilding, mtry = 190) 
+#Load model from Building
+load("_WapsBuildingRF.rda")
+plsFitWapsBuilding
+
+#     0    1    2 class.error
+#0 3668    5    0 0.001361285
+#1    0 3441   16 0.004628290
+#2    0   28 6354 0.004387339
+
+#Predict the Test data
+predrf_Building <- predict(plsFitWapsBuilding, newdata = wifidataVal)
+
+#Post Resample Metrics
+pred_metric_rf_Building <- postResample(wifidataVal$BUILDINGID, predrf_Building)
+
+#Metrics
+pred_metric_rf_Building
+# Accuracy     Kappa 
+#0.9810981 0.9702587
+
+
+      #Save model into a CSV
+      #save(plsFitWapsBuilding, file = "_WapsBuildingRF.rda")
+
+
+
+```
+
+
+
+```{r}
+############################################FLOOR######################################################################################################################
+
+#Load model from Building
+load("_WapsBuildingRF.rda")
+
+#Select variables only with WAPS + FLOOR
+wifiWapsFloor <- wifidataTrainNoCor %>% select(-c(LONGITUDE, LATITUDE, BUILDINGID))
+
+
+#Predict the Building and put it in a new column in the Train set
+predrf_Building_for_Floor <- predict(plsFitWapsBuilding, newdata = wifiWapsFloor )
+wifiWapsFloor$BUILDINGID <- predrf_Building_for_Floor
+
+```
+
+
+
+```{r}
+############################################FLOOR######################################################################################################################
+
+
+         #random forest ~FLOOR @Random Forest
+         #plsFitWapsFloor <- randomForest(FLOOR~., data = wifiWapsFloor, mtry = 191) 
+
+#Load model from Floor
+load("_WapsFloorRF.rda") 
+plsFitWapsFloor
+
+#Confusion matrix:
+#     0    1    2    3   4 class.error
+#0 4279   16    0   37   0 0.012234534
+#1   21 4743   16    4   0 0.008570234
+#2    2   23 4355   35   1 0.013813406
+#3   19    4   22 4994   2 0.009323547
+#4    0    0    0    7 720 0.009628611
+
+#Predict the Validation data
+predrf_Floor <- predict(plsFitWapsFloor, newdata = wifidataVal)
+
+
+#Post Resample Metrics
+pred_metric_rf_Floor <- 
+postResample(wifidataVal$FLOOR, predrf_Floor)
+#Metrics
+pred_metric_rf_Floor
+# Accuracy     Kappa 
+#0.8316832 0.7656290 
+
+
+         #Save model into a CSV
+         #save(plsFitWapsFloor, file = "_WapsFloorRF.rda")
+
+```
+
+
+
+```{r}
+############################################FLOOR######################################################################################################################
+
+#Add Long, Lat and Floor to this dataset
+
+#Create a new column with the ID
+
+#wifidataTrainNoCor
+#wifidataTrainNoCor <-mutate(wifidataTrainNoCor, id = rownames(wifidataTrainNoCor))
+
+#test set
+#testWapsBuildingRF <-mutate(testWapsBuildingRF, id = rownames(testWapsBuildingRF))
+
+#Merge both datasets
+testWapsFLoorRFMerge <- inner_join(testWapsFloorRF,wifidataTrainNoCor)
+   
+#Separate the buildings
+#BUILDING 0 
+testWapsBuildingRFMerge0 <- testWapsFLoorRFMerge %>% filter(BUILDINGID==0)
+
+#BUILDING 1
+testWapsBuildingRFMerge1 <- testWapsFLoorRFMerge %>% filter(BUILDINGID==1)
+
+#BUILDING 2
+testWapsBuildingRFMerge2 <- testWapsFLoorRFMerge %>% filter(BUILDINGID==2)
+
+
+
+#Plot
+#BUILDING 0 
+marker <- list(color = ~Predicted, colorscale = c('#FFE1A1', '#683531'), 
+              showscale = TRUE)
+
+
+plot_ly(testWapsBuildingRFMerge0, x = ~LONGITUDE, y = ~LATITUDE, z = ~FLOOR, size = 0.03) %>% add_markers() %>% layout(scene = list(xaxis = list(title = "Longitude"), yaxis = list(title = "Latitude"), zaxis = list(title = "Floor"))) %>% add_trace( x = ~LONGITUDE, y = ~LATITUDE, z=~PredictedFloor, opacity = 0.5) 
+
+
+
+#BUILDING 1
+ plot_ly(testWapsBuildingRFMerge1, x = ~LONGITUDE, y = ~LATITUDE, z = ~FLOOR, size = 0.03) %>% add_markers() %>% layout(scene = list(xaxis = list(title = "Longitude"), yaxis = list(title = "Latitude"), zaxis = list(title = "Floor"))) %>% add_trace( x = ~LONGITUDE, y = ~LATITUDE, z=~PredictedFloor, opacity = 0.5) 
+ 
+#BUILDING 2
+plot_ly(testWapsBuildingRFMerge2, x = ~LONGITUDE, y = ~LATITUDE, z = ~FLOOR, size = 0.03) %>% add_markers() %>% layout(scene = list(xaxis = list(title = "Longitude"), yaxis = list(title = "Latitude"), zaxis = list(title = "Floor"))) %>% add_trace( x = ~LONGITUDE, y = ~LATITUDE, z=~PredictedFloor, opacity = 0.5) 
+
+```
+
+
+
+```{r}
+############################################LONGITUDE######################################################################################################################
+
+reset.seed()
+
+#Load model from Building
+load("_WapsBuildingRF.rda") #plsFitWapsBuilding
+     
+#Load model from Floor
+load("_WapsFloorRF.rda") #plsFitWapsFloor
+
+#Select variables only with WAPS + LONGITUDE
+
+wifiWapsLongitude <- wifidataTrainNoCor %>% select(-c(LATITUDE, FLOOR, BUILDINGID))
+
+
+#Predict the Building and put it in a new column in Train set
+predrf_Building_for_Longitude <- predict(plsFitWapsBuilding, newdata = wifiWapsLongitude)
+wifiWapsLongitude$BUILDINGID <- predrf_Building_for_Longitude
+
+
+#Predict the Floor and put it in a new column
+#in train
+predrf_Floor_for_Longitude <- predict(plsFitWapsFloor, newdata = wifiWapsLongitude)
+wifiWapsLongitude$FLOOR <- predrf_Floor_for_Longitude
+
+
+
+```
+
+
+´
+```{r}
+############################################LONGITUDE######################################################################################################################
+
+reset.seed()
+            #random forest ~FLOOR @CRandom Forest
+            #plsFitWapsLongitude <- randomForest(LONGITUDE~., data = wifiWapsLongitude, mtry = 193) 
+load("_WapsLongitudeRF.rda")
+plsFitWapsLongitude
+
+# mtry  RMSE      Rsquared   MAE     
+#    2   93.08891  0.8937296  85.28058
+#  193   22.23506  0.9697075  13.53111 *
+#  385   24.54994  0.9626794  14.52663
+
+#Predict the Test data
+predrf_Longitude <- predict(plsFitWapsLongitude, newdata = wifidataVal)
+
+#Post Resample Metrics
+pred_metric_rf_Longitude <- 
+postResample(wifidataVal$LONGITUDE, predrf_Longitude)
+#Metrics
+pred_metric_rf_Longitude
+
+#     RMSE   Rsquared        MAE 
+#11.8294055  0.9903933  8.0697226
+
+
+            #Save model into a CSV
+            #save(plsFitWapsLongitude, file = "_WapsLongitudeRF.rda")
+```
+
+
+
+```{r}
+############################################LATITUDE######################################################################################################################
+
+
+#Load model from Building
+load("_WapsBuildingRF.rda") #plsFitWapsBuilding
+     
+#Load model from Floor
+load("_WapsFloorRF.rda") #plsFitWapsFloor
+
+#Load model from Longitude
+load("_WapsLongitudeRF.rda") #plsFitWapsLongitude
+
+
+#Select variables only with WAPS + LATITUDE
+
+wifiWapsLatitude <- wifidataTrainNoCor %>% select(-c(LONGITUDE, FLOOR, BUILDINGID))
+
+
+#Predict the Building and put it in a new column in Train set
+#in train
+predrf_Building_for_Latitude <- predict(plsFitWapsBuilding, newdata = wifiWapsLatitude)
+wifiWapsLatitude$BUILDINGID <- predrf_Building_for_Latitude
+
+
+#Predict the Floor and put it in a new column
+#in train
+predrf_Floor_for_Latitude <- predict(plsFitWapsFloor, newdata = wifiWapsLatitude)
+wifiWapsLatitude$FLOOR <- predrf_Floor_for_Latitude
+
+
+#Predict the Longitude and put it in a new column
+#in train
+predrf_Longitude_for_Latitude <- predict(plsFitWapsLongitude, newdata = wifiWapsLatitude)
+wifiWapsLatitude$LONGITUDE <- predrf_Longitude_for_Latitude
+
+```
+
+
+
+```{r}
+############################################LATITUDE######################################################################################################################
+
+reset.seed()
+
+#random forest ~FLOOR @RandomForest
+plsFitWapsLatitude <- randomForest(LATITUDE~., data = wifiWapsLatitude, mtry=194) 
+plsFitWapsLatitude
+
+#  mtry  RMSE      Rsquared  MAE     
+#    2   49.69596  0.853228  40.48128
+#  194   16.29938  0.939995  11.50426 *
+#  386   17.54124  0.929862  11.98166
+
+#Predict the Test data
+predrf_Latitude <- predict(plsFitWapsLatitude, newdata = wifidataVal)
+
+#Post Resample Metrics
+pred_metric_rf_Latitude <- 
+postResample(wifidataVal$LATITUDE, predrf_Latitude)
+#Metrics
+pred_metric_rf_Latitude
+
+#    RMSE Rsquared      MAE 
+#9.381361 0.983449 5.823137  
+
+
+#Save model into a CSV
+save(plsFitWapsLatitude, file = "_WapsLatitudeRF.rda")
+
+
+```
+
+
+
+```
